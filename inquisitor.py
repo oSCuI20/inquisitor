@@ -147,7 +147,7 @@ def main():
 
         q_capture.task_done()
 
-      if not q_attack.empty():
+      if args.spoof and not q_attack.empty():
         q_attack.get()
         q_attack.task_done()
 
@@ -157,8 +157,10 @@ def main():
       interrupt = True
   #endwhile
 
-  q_attack.join()
-  thattack.join()
+  if args.spoof:
+    q_attack.join()
+    thattack.join()
+
   q_capture.join()
   thcapture.join()
 #main
@@ -217,19 +219,20 @@ def parse_arguments():
 
   args.spoof = ('-dst' in options and '-target' in options)
 
-  try:
-    for ip in (args.ip_dst, args.ip_target):
-      i1, i2, i3, i4 = ip.split('.', 4)
-      inet_aton(ip)
-    #endfor
+  if args.spoof:
+    try:
+      for ip in (args.ip_dst, args.ip_target):
+        i1, i2, i3, i4 = ip.split('.', 4)
+        inet_aton(ip)
+      #endfor
 
-    for mac in (args.mac_dst, args.mac_target):
-      m = (m1, m2, m3, m4, m5, m6) = mac.split(':', 6)
-      [ int(_, 16) for _ in m ]
-    #endfor
+      for mac in (args.mac_dst, args.mac_target):
+        m = (m1, m2, m3, m4, m5, m6) = mac.split(':', 6)
+        [ int(_, 16) for _ in m ]
+      #endfor
 
-  except ValueError as err:
-    halt(f'ERROR: ip address or mac address in -dst or -target argument not valid, `{err}`', 1)
+    except ValueError as err:
+      halt(f'ERROR: ip address or mac address in -dst or -target argument not valid, `{err}`', 1)
 #parse_arguments
 
 
