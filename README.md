@@ -82,3 +82,5 @@ Using custom filter
 -- 1660350321.689338 ipv4 UDP ttl: 64 src 1.1.1.1:46944 -> dst 3.3.3.3:53 DNS: 0x79aa Query other-domain.com
 -- 1660350321.795128 ipv4 UDP ttl: 64 src 3.3.3.3:53 -> dst 1.1.1.1:46944 DNS: 0x79aa Response other-domain.com type CNAME
 ```
+
+
