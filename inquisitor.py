@@ -32,7 +32,7 @@ from queue            import Queue
 from socket           import inet_aton
 from time             import sleep
 
-from traffic               import *
+from lib.traffic           import *
 from attack.ARPSpoofPacket import *
 from utils.utils           import *
 from utils.device          import *

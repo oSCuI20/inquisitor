@@ -8,65 +8,16 @@
 # Requiere root
 #
 import sys, os
-import ctypes
 
 from struct import pack
 from time   import sleep
 
-from utils.utils                import *
+from utils.utils import *
+from lib.pcap    import *
 from osimodel.datalink.ethernet import Ethernet
 
 
-# map structured  to python
-class sockaddr(ctypes.Structure):
-  _fields_ = [
-    ('sa_family', ctypes.c_ushort),
-    ('sa_data', ctypes.c_char * 14)
-  ]
-#class sockaddr
-
-class bpf(ctypes.Structure):
-  _fields_ = [
-    ('bf_len',   ctypes.c_int),
-    ('bf_insns', ctypes.c_void_p)
-  ]
-#class bpf
-
-class pkthdr(ctypes.Structure):
-  _fields_ = [
-    ('tv_sec',  ctypes.c_long),
-    ('tv_usec', ctypes.c_long),
-    ('caplen',  ctypes.c_uint),
-    ('len',     ctypes.c_uint)
-  ]
-#class pkthdr
-
-class addr(ctypes.Structure):
-  pass
-
-addr._fields_ = [
-  ('next', ctypes.POINTER(addr)),
-  ('addr', ctypes.POINTER(sockaddr)),
-  ('netmask', ctypes.POINTER(sockaddr)),
-  ('broadaddr', ctypes.POINTER(sockaddr)),
-  ('dstaddr', ctypes.POINTER(sockaddr))
-]
-#class addr
-
-class stat(ctypes.Structure):
-  _fields_ = [
-    ('ps_recv',   ctypes.c_uint),
-    ('ps_drop',   ctypes.c_uint),
-    ('ps_ifdrop', ctypes.c_uint)
-  ]
-#class stat
-
-__PCAP_ERRBUF_SIZE = 256
-
 class traffic(object):
-
-  __LIBPCAP_SHARED_LIBRARY = '/usr/lib/x86_64-linux-gnu/libpcap.so.1.10.0'
-  __PCAP_ERRBUF_SIZE = 256
 
   __pcap    = None
   __bpf     = None
@@ -75,11 +26,11 @@ class traffic(object):
   __verbose = False
 
   _device  = None
-  _snaplen = ctypes.c_int(65535)
+  _snaplen = c_int(65535)
   _promisc = True
-  _limit   = ctypes.c_int(-1)    # counter
-  _timeout = ctypes.c_int(1)  # milliseconds => 1s
-  _errbuf  = ctypes.create_string_buffer(__PCAP_ERRBUF_SIZE)
+  _limit   = c_int(-1)    # counter
+  _timeout = c_int(1)  # milliseconds => 1s
+  _errbuf  = PCAP_ERRORBUF
   _filter  = b''
 
   def __init__(self, **kwargs):
@@ -99,24 +50,17 @@ class traffic(object):
       self.__setattr__(key, value)
     #endfor
 
-    self.__pcap = ctypes.CDLL(self.__LIBPCAP_SHARED_LIBRARY)
-
     self.__initialize()
   #__init__
 
   def __initialize(self):
-    self.__pcap.pcap_lookupdev.restype = ctypes.c_char_p
-
-    self.__pcap.pcap_open_live.restype  = ctypes.POINTER(ctypes.c_void_p)
-    self.__pcap.pcap_open_live.argstype = [ ctypes.c_char_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_char_p ]
-
-    self.__pcap.pcap_can_set_rfmon.argtypes = [ ctypes.c_void_p ]
-
-    self.__stat    = ctypes.POINTER(stat)()
-    self.__pkthdr  = ctypes.POINTER(pkthdr)()
-    self.__pktdata = ctypes.POINTER(ctypes.c_ubyte * self._snaplen.value)()
-
     self.__handle()
+
+    self.__bpf     = bpf_program()
+    self.__stat    = stat()
+    self.__pkthdr  = POINTER(pkthdr)()
+    self.__pktdata = POINTER(c_ubyte * self._snaplen.value)()
+
     self.terminate = False
   #__initialize
 
@@ -124,21 +68,26 @@ class traffic(object):
     if hasattr(self, 'handle'):
       return
 
-    self.handle = self.__pcap.pcap_open_live(self.device, self._snaplen,
+    self.handle = pcap_open_live(self.device, self._snaplen,
                                              self._promisc, self._timeout, self._errbuf)
-    if not self.handle:
-      raise trafficException(f'ERROR: handle, {self.__pcap.pcap_geterr()}')
 
-    if self.__pcap.pcap_can_set_rfmon(self.handle) == 1:
+    if not self.handle:
+      raise trafficException(f'ERROR: handle, {pcap_geterr(self.handle)}')
+
+    if pcap_can_set_rfmon(self.handle) == 1:
       raise trafficException(f'ERROR: Can\'t set interface in monitor mode, {self.__pcap.pcap_geterr()}')
 
-    self.__pcap.pcap_setnonblock(self.handle, 1, self._errbuf)
+    pcap_setnonblock(self.handle, 1, self._errbuf)
   #__handle
 
   def stop(self):
     self.terminate = True
     if hasattr(self, 'handle') and self.handle:
-      self.__pcap.pcap_close(self.handle)
+      if pcap_stats(self.handle, byref(self.__stat)) == 0:
+        self.__logger(f'\nPackets received: {self.__stat.ps_recv}' +
+                      f'\nPackets dropped: {self.__stat.ps_ifdrop}')
+
+      pcap_close(self.handle)
 
     self.handle = None
   #stop
@@ -150,13 +99,8 @@ class traffic(object):
       if self.terminate:
         break
 
-      n = self.__pcap.pcap_next_ex(
-        self.handle,
-        ctypes.byref(self.__pkthdr),
-        ctypes.byref(self.__pktdata)
-	    )
-
-      if n == 1:
+      if pcap_next_ex(self.handle, byref(self.__pkthdr),
+                                    byref(self.__pktdata)) == 1:
         caplen = self.__pkthdr.contents.caplen
         packet = Ethernet(
           pack('B' * caplen, *self.__pktdata.contents[:caplen]),
@@ -175,13 +119,11 @@ class traffic(object):
       self.filter = filter
 
     if self.filter:
-      self.__bpf = bpf()
+      if pcap_compile(self.handle, byref(self.__bpf), self.filter, 1, 0xFFFFFF) < 0:
+        raise trafficException(f'ERROR: {pcap_geterr(self.handle)}')
 
-      if self.__pcap.pcap_compile(self.handle, ctypes.byref(self.__bpf), self.filter, 0, 0) == -1:
-        raise trafficException(f'ERROR: {self.__pcap.pcap_geterr()}')
-
-      if self.__pcap.pcap_setfilter(self.handle, ctypes.byref(self.__bpf)) == -1:
-        raise trafficException(f'ERROR: {self.__pcap.pcap_geterr()}')
+      if pcap_setfilter(self.handle, byref(self.__bpf)) < 0:
+        raise trafficException(f'ERROR: {pcap_geterr(self.handle)}')
     #endif
   #setFilter
 
@@ -203,9 +145,8 @@ class traffic(object):
       #endif
 
       for raw in raw_packets:
-        n = self.__pcap.pcap_sendpacket(self.handle, raw, len(raw))
-        if n != 0:
-          self.__logger(f'error sending packet: {self.__pcap.pcap_geterr(self.handle)}', queue)
+        if pcap_sendpacket(self.handle, raw, len(raw)) != 0:
+          self.__logger(f'error sending packet: {pcap_geterr(self.handle)}', queue)
 
         sleep(0.1)
       #endfor
